@@ -1,0 +1,175 @@
+Listo, acá está TODO junto para `paocoticchia-a11y / calculadora-uber`. Copia archivo por archivo, tal cual el nombre.
+
+---
+
+1. `settings.gradle`
+rootProject.name = "CalculadoraUber"
+include ':app'
+2. `build.gradle` (el de la raíz)
+buildscript {
+    repositories { google(); mavenCentral() }
+    dependencies { classpath 'com.android.application:8.1.0' classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.0' }
+}
+allprojects { repositories { google(); mavenCentral() } }
+3. `app/build.gradle`
+plugins { id 'com.android.application' id 'org.jetbrains.kotlin.android' }
+android {
+    namespace 'com.tuapp.calculadorauber'
+    compileSdk 34
+    defaultConfig { applicationId "com.tuapp.calculadorauber" minSdk 26 targetSdk 34 versionCode 1 versionName "1.0" }
+    buildTypes { release { minifyEnabled false } }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17 targetCompatibility JavaVersion.VERSION_17 }
+    kotlinOptions { jvmTarget = '17' }
+}
+dependencies {
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+}
+4. `app/src/main/AndroidManifest.xml`
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <application android:label="Calculadora Uber" android:theme="@style/Theme.AppCompat.Light">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service android:name=".UberReaderService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_config" />
+        </service>
+    </application>
+</manifest>
+5. `app/src/main/java/com/tuapp/calculadorauber/MainActivity.kt`
+package com.tuapp.calculadorauber
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+class MainActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+    }
+}
+6. `app/src/main/java/com/tuapp/calculadorauber/UberReaderService.kt`
+package com.tuapp.calculadorauber
+import android.accessibilityservice.AccessibilityService
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import android.graphics.PixelFormat
+import android.view.*
+import android.widget.*
+
+class UberReaderService : AccessibilityService() {
+    private var floatView: View? = null
+    private var wm: WindowManager? = null
+    private var paradas = 0
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) return
+        val root = rootInActiveWindow ?: return
+        val texto = StringBuilder()
+        fun recorrer(n: AccessibilityNodeInfo?) {
+            if (n == null) return
+            if (n.text != null) texto.append(n.text.toString() + " | ")
+            for (i in 0 until n.childCount) recorrer(n.getChild(i))
+        }
+        recorrer(root)
+        val t = texto.toString()
+        if (!t.contains("PEN") || !t.contains("Viaje:")) return
+
+        val pago = Regex("PEN([0-9]+\\.[0-9]+)").find(t)?.groupValues?.get(1)?.toFloatOrNull() ?: return
+        val minRecojo = Regex("A (\\d+) min").find(t)?.groupValues?.get(1)?.toIntOrNull() ?: return
+        val minViaje = Regex("Viaje: (\\d+) min").find(t)?.groupValues?.get(1)?.toIntOrNull() ?: return
+        val kmViaje = Regex("Viaje:.*?(\\d+\\.\\d+) km").find(t)?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
+        val kmRecojo = Regex("A \\d+ min \\((\\d+\\.\\d+) km\\)").find(t)?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
+
+        val tiempoTotal = minRecojo + minViaje + (paradas * 15)
+        var miPrecio = (tiempoTotal / 60.0) * 40.0
+        if (miPrecio < 15.0) miPrecio = 15.0
+        val diff = pago - miPrecio
+        val estado = when {
+            diff > 0.5 -> "CONVIENE +S/%.2f".format(diff)
+            diff < -0.5 -> "NO CONVIENE -S/%.2f".format(-diff)
+            else -> "EMPATE S/0.00"
+        }
+        mostrarBarra(tiempoTotal, kmRecojo + kmViaje, miPrecio, pago, estado, diff)
+    }
+
+    private fun mostrarBarra(tiempo: Int, km: Float, miPrecio: Double, uber: Float, estado: String, diff: Double) {
+        if (floatView == null) {
+            wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            floatView = LayoutInflater.from(this).inflate(R.layout.flotante_barra, null)
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                PixelFormat.TRANSLUCENT
+            )
+            params.gravity = Gravity.TOP
+            params.y = 10
+            wm?.addView(floatView, params)
+            floatView?.findViewById<Button>(R.id.btnMas)?.setOnClickListener { paradas++; }
+            floatView?.findViewById<Button>(R.id.btnMenos)?.setOnClickListener { if (paradas > 0) paradas--; }
+        }
+        floatView?.findViewById<TextView>(R.id.txtInfo)?.text =
+            "$tiempo min | %.1f km | TU: S/%.2f | UBER: S/%.2f | $estado".format(km, miPrecio, uber)
+        val color = if (diff > 0.5) 0xFF1B8C3A.toInt() else if (diff < -0.5) 0xFFD32F2F.toInt() else 0xFFE67E00.toInt()
+        floatView?.findViewById<TextView>(R.id.txtInfo)?.setTextColor(color)
+    }
+    override fun onInterrupt() {}
+}
+7. `app/src/main/res/layout/flotante_barra.xml`
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:background="#FFFFFF" android:padding="8dp" android:orientation="horizontal">
+    <TextView android:id="@+id/txtInfo"
+        android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+        android:textSize="13sp" android:textStyle="bold" android:textColor="#111111" />
+    <Button android:id="@+id/btnMenos" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="- Parada" />
+    <Button android:id="@+id/btnMas" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="+ Parada" />
+</LinearLayout>
+8. `app/src/main/res/layout/activity_main.xml`
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:gravity="center" android:padding="24dp">
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:text="Calculadora Uber lista" android:textSize="20sp" android:textStyle="bold" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:text="1. Permite mostrar sobre otras apps\n2. Activa Accesibilidad - Calculadora Uber\n3. Abre Uber Driver" android:layout_marginTop="16dp" />
+</LinearLayout>
+9. `app/src/main/res/xml/accessibility_config.xml`
+<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="100"
+    android:canRetrieveWindowContent="true" />
+10. `.github/workflows/build-apk.yml`
+name: Build APK
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v3
+      - run: gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: calculadora-uber-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+---
